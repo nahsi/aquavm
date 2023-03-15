@@ -1,0 +1,42 @@
+[workspace]
+members = [
+    "air",
+    "air-interpreter",
+    "avm/interface",
+    "avm/server",
+    "crates/air-lib/air-parser",
+    "crates/air-lib/execution-info-collector",
+    "crates/air-lib/interpreter-cid",
+    "crates/air-lib/interpreter-data",
+    "crates/air-lib/interpreter-interface",
+    "crates/air-lib/lambda/ast",
+    "crates/air-lib/lambda/parser",
+    "crates/air-lib/log-targets",
+    "crates/air-lib/polyplets",
+    "crates/air-lib/test-utils",
+    "crates/air-lib/trace-handler",
+    "crates/air-lib/utils",
+    "crates/beautifier",
+    "crates/data-store",
+    "crates/testing-framework",
+    "tools/cli/air",
+    "tools/wasm/air-beautify-wasm",
+]
+
+exclude = [
+    "air/tests/test_module/integration/security_tetraplets/auth_module",
+    "air/tests/test_module/integration/security_tetraplets/log_storage",
+    "crates/interpreter-wasm",
+    "junk",
+]
+
+[profile.release]
+opt-level = 3
+# since the interpreter in actively development stage, these settings are true at least for a while
+debug = true
+overflow-checks = true
+debug-assertions = false
+panic = "unwind"
+
+[patch.crates-io]
+polyplets = { path = "crates/air-lib/polyplets" }

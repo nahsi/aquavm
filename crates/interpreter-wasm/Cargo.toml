@@ -1,0 +1,19 @@
+[package]
+name = "air-interpreter-wasm"
+version = "0.37.0"
+description = "Distribution of AIR interpreter as .wasm"
+authors = ["Fluence Labs"]
+license = "Apache-2.0"
+edition = "2018"
+include = [
+    "**/*.rs",
+    "Cargo.toml",
+    "air_interpreter_server.wasm"
+]
+documentation = "https://docs.rs/air-interpreter-wasm"
+repository = "https://github.com/fluencelabs/aquavm/tree/master/crates/interpreter-wasm"
+keywords = ["fluence", "air", "webassembly", "programming-language"]
+categories = ["wasm"]
+
+[build-dependencies]
+built = "0.6.0"

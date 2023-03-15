@@ -1,0 +1,66 @@
+(seq
+    (seq
+        (seq
+            (seq
+                (seq
+                    (ap "a1" $stream_1)
+                    (ap "a2" $stream_1)
+                )
+                (seq
+                    (ap "b1" $stream_2)
+                    (ap "b2" $stream_2)
+                )
+            )
+            (seq
+                (ap "c1" $stream_3)
+                (ap "c2" $stream_3)
+            )
+        )
+        (seq
+            (ap "d1" $stream_4)
+            (ap "d2" $stream_4)
+        )
+    )
+    (par
+        (par
+            (xor
+                (fold $stream_1 v1
+                    (seq
+                        (fold $stream_2 v2
+                            (xor
+                                (seq
+                                    (seq
+                                        (fold $stream_3 v3
+                                            (par
+                                                (fold $stream_4 v4
+                                                    (par
+                                                        (call "{fold_executor_id}" ("" "") [])
+                                                        (next v4)
+                                                    )
+                                                )
+                                                (next v3)))
+                                        (call "{error_trigger_id}" ("error" "") []) ; will trigger an error
+                                    )
+                                    (next v2)
+                                )
+                                (ap %last_error% $error_stream)
+                            )
+                        )
+                        (next v1)
+                    )
+                )
+                (call "{last_error_receiver_id}" ("" "") [%last_error%]) ; shouldn't be called
+            )
+            (seq
+                (call "{last_peer_checker_id}" ("" "") ["last_peer 2"])
+                (fold $error_stream error
+                    (seq
+                        (call "{last_peer_checker_id}" ("" "") [error])
+                        (next error)
+                    )
+                )
+            )
+        )
+        (call "{last_peer_checker_id}" ("" "") ["last_peer"])
+    )
+)

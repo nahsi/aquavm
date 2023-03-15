@@ -1,0 +1,272 @@
+use crate::ast::*;
+use crate::parser::ParserError;
+use crate::parser::VariableValidator;
+use crate::parser::Span;
+use crate::parser::lexer::{AirPos, Token};
+
+use air_lambda_parser::LambdaAST;
+use lalrpop_util::ErrorRecovery;
+use std::rc::Rc;
+
+// the only thing why input matters here is just introducing lifetime for Token
+grammar<'err, 'input, 'v>(input: &'input str, errors: &'err mut Vec<ErrorRecovery<AirPos, Token<'input>, ParserError>>, validator: &'v mut VariableValidator<'input>);
+
+pub AIR = Instr;
+
+Instr: Box<Instruction<'input>> = {
+    <left: @L> "(" call <triplet:Triplet> <args:Args> <output:CallOutput?> ")" <right: @R> => {
+        let args = Rc::new(args);
+        let output = output.unwrap_or(CallOutputValue::None);
+        let call = Call::new(triplet, args, output);
+        let span = Span::new(left, right);
+
+        validator.met_call(&call, span);
+
+        Box::new(Instruction::Call(call))
+    },
+
+    <left: @L> "(" canon <peer_id:ResolvableToPeerIdVariable> <stream:StreamArgument> <canon_stream:CanonStreamArgument> ")" <right: @R> => {
+        let canon = Canon::new(peer_id, stream, canon_stream);
+
+        let span = Span::new(left, right);
+        validator.met_canon(&canon, span);
+
+        Box::new(Instruction::Canon(canon))
+    },
+
+
+    <left: @L> "(" ap <arg:ApArgument> <result:ApResult> ")" <right: @R> => {
+        let apply = Ap::new(arg, result);
+
+        let span = Span::new(left, right);
+        validator.met_ap(&apply, span);
+
+        Box::new(Instruction::Ap(apply))
+    },
+
+    "(" seq <l:Instr> <r:Instr> ")" => Box::new(Instruction::Seq(Seq::new(l, r))),
+    "(" par <l:Instr> <r:Instr> ")" => Box::new(Instruction::Par(Par::new(l, r))),
+    "(" never ")" => Box::new(Instruction::Never(Never)),
+    "(" null ")" => Box::new(Instruction::Null(Null)),
+
+    <left: @L> "(" new <argument: NewArgument> <instruction:Instr> ")" <right: @R> => {
+        let span = Span::new(left, right);
+        let new = New::new(argument, instruction, span);
+
+        validator.met_new(&new, span);
+
+        Box::new(Instruction::New(new))
+    },
+
+    "(" fail <fail_body: FailBody> ")" => {
+        Box::new(Instruction::Fail(fail_body))
+    },
+
+    <left: @L> "(" fold <iterable:FoldScalarIterable> <iterator:Scalar> <instruction:Instr> <last_instruction:Instr?>")" <right: @R> => {
+        let iterator = Scalar::new(iterator.0, iterator.1);
+        let span = Span::new(left, right);
+        let fold = FoldScalar::new(iterable, iterator, *instruction, last_instruction.map(|v| *v), span);
+
+        validator.met_fold_scalar(&fold, span);
+
+        Box::new(Instruction::FoldScalar(fold))
+    },
+
+    <left: @L> "(" fold <stream:Stream> <iterator:Scalar> <instruction:Instr> <last_instruction:Instr?> ")" <right: @R> => {
+        let iterable = Stream::new(stream.0, stream.1);
+        let iterator = Scalar::new(iterator.0, iterator.1);
+        let span = Span::new(left, right);
+        let fold = FoldStream::new(iterable, iterator, *instruction, last_instruction.map(|v| *v), span);
+
+        validator.meet_fold_stream(&fold, span);
+
+        Box::new(Instruction::FoldStream(fold))
+    },
+
+    <left: @L> "(" next <iterator:Scalar> ")" <right: @R> => {
+        let iterator = Scalar::new(iterator.0, iterator.1);
+        let next = Next::new(iterator);
+        let span = Span::new(left, right);
+        validator.met_next(&next, span);
+
+        Box::new(Instruction::Next(next))
+    },
+
+    "(" xor <l:Instr> <r:Instr> ")" => Box::new(Instruction::Xor(Xor(l, r))),
+
+    <left: @L> "(" match_ <l:Value> <r:Value> <i:Instr> ")" <right: @R> => {
+        let match_ = Match::new(l, r, i);
+        let span = Span::new(left, right);
+        validator.met_match(&match_, span);
+
+        Box::new(Instruction::Match(match_))
+    },
+
+    <left: @L> "(" mismatch <l:Value> <r:Value> <i:Instr> ")" <right: @R> => {
+        let mismatch = MisMatch::new(l, r, i);
+        let span = Span::new(left, right);
+        validator.met_mismatch(&mismatch, span);
+
+        Box::new(Instruction::MisMatch(mismatch))
+     },
+
+    ! => { errors.push(<>); Box::new(Instruction::Error) },
+}
+
+Args: Vec<ImmutableValue<'input>> = {
+    "[" <args:(<Arg>)*> "]" => args
+}
+
+Triplet: Triplet<'input> = {
+    <peer_id:PeerId> "(" <service_id:ServiceId> <function_name:Function> ")" => Triplet {
+        peer_id,
+        service_id,
+        function_name
+    }
+}
+
+ApResult: ApResult<'input> = {
+    <scalar:Scalar> => ApResult::scalar(scalar.0, scalar.1),
+    <stream:Stream> => ApResult::stream(stream.0, stream.1),
+};
+
+CallOutput: CallOutputValue<'input> = {
+    <scalar:Scalar> => CallOutputValue::scalar(scalar.0, scalar.1),
+    <stream:Stream> => CallOutputValue::stream(stream.0, stream.1),
+};
+
+FailBody: Fail<'input> = {
+    <scalar:Scalar> => Fail::Scalar(Scalar::new(scalar.0, scalar.1)),
+    <scalar:ScalarWithLambda> => Fail::ScalarWithLambda(ScalarWithLambda::new(scalar.0, scalar.1, scalar.2)),
+    <ret_code:I64> <error_message:Literal> => Fail::Literal {
+        ret_code,
+        error_message,
+    },
+    <canon_stream:CanonStreamWithLambda> => Fail::CanonStreamWithLambda(CanonStreamWithLambda::new(canon_stream.0, canon_stream.1, canon_stream.2)),
+    <left: @L> <l:LastError> <right: @R> => {
+        Fail::LastError
+    }
+}
+
+FoldScalarIterable: FoldScalarIterable<'input> = {
+    <scalar:Scalar> => FoldScalarIterable::Scalar(Scalar::new(scalar.0, scalar.1)),
+    <scalar:ScalarWithLambda> => FoldScalarIterable::ScalarWithLambda(ScalarWithLambda::new(scalar.0, scalar.1, scalar.2)),
+    <canon_stream:CanonStream> => FoldScalarIterable::CanonStream(CanonStream::new(canon_stream.0, canon_stream.1)),
+    "[" "]" => FoldScalarIterable::EmptyArray,
+};
+
+PeerId = ResolvableToPeerIdVariable;
+Function = ResolvableToStringVariable;
+ServiceId = ResolvableToStringVariable;
+
+ResolvableToPeerIdVariable: ResolvableToPeerIdVariable<'input> = {
+    InitPeerId => ResolvableToPeerIdVariable::InitPeerId,
+    <literal:Literal> => ResolvableToPeerIdVariable::Literal(literal),
+    <scalar:Scalar> => ResolvableToPeerIdVariable::Scalar(Scalar::new(scalar.0, scalar.1)),
+    <scalar:ScalarWithLambda> => ResolvableToPeerIdVariable::ScalarWithLambda(ScalarWithLambda::new(scalar.0, scalar.1, scalar.2)),
+    <canon_stream:CanonStreamWithLambda> => ResolvableToPeerIdVariable::CanonStreamWithLambda(CanonStreamWithLambda::new(canon_stream.0, canon_stream.1, canon_stream.2)),
+}
+
+ResolvableToStringVariable: ResolvableToStringVariable<'input> = {
+    <literal:Literal> => ResolvableToStringVariable::Literal(literal),
+    <scalar:Scalar> => ResolvableToStringVariable::Scalar(Scalar::new(scalar.0, scalar.1)),
+    <scalar:ScalarWithLambda> => ResolvableToStringVariable::ScalarWithLambda(ScalarWithLambda::new(scalar.0, scalar.1, scalar.2)),
+    <canon_stream:CanonStreamWithLambda> => ResolvableToStringVariable::CanonStreamWithLambda(CanonStreamWithLambda::new(canon_stream.0, canon_stream.1, canon_stream.2)),
+}
+
+NewArgument: NewArgument<'input> = {
+    <scalar:Scalar> => NewArgument::Scalar(Scalar::new(scalar.0, scalar.1)),
+    <stream:Stream> => NewArgument::Stream(Stream::new(stream.0, stream.1)),
+    <canon_stream:CanonStream> => NewArgument::CanonStream(CanonStream::new(canon_stream.0, canon_stream.1)),
+}
+
+Number: Number = {
+    <integer:I64> => Number::Int(integer),
+    <float:F64> => Number::Float(float),
+}
+
+Arg = Value;
+
+Value: ImmutableValue<'input> = {
+    InitPeerId => ImmutableValue::InitPeerId,
+    <LastError> => ImmutableValue::LastError(None),
+    <le:LastErrorWithLambda> => ImmutableValue::LastError(Some(le)),
+    <l:Literal> => ImmutableValue::Literal(l),
+    Timestamp => ImmutableValue::Timestamp,
+    TTL => ImmutableValue::TTL,
+    <n:Number> => ImmutableValue::Number(n),
+    <b:Boolean> => ImmutableValue::Boolean(b),
+    "[" "]" => ImmutableValue::EmptyArray,
+    <scalar:Scalar> => ImmutableValue::Variable(ImmutableVariable::scalar(scalar.0, scalar.1)),
+    <scalar:ScalarWithLambda> => ImmutableValue::VariableWithLambda(ImmutableVariableWithLambda::scalar(scalar.0, scalar.1, scalar.2)),
+    <canon_stream:CanonStream> => ImmutableValue::Variable(ImmutableVariable::canon_stream(canon_stream.0, canon_stream.1)),
+    <canon_stream:CanonStreamWithLambda> => ImmutableValue::VariableWithLambda(ImmutableVariableWithLambda::canon_stream(canon_stream.0, canon_stream.1, canon_stream.2)),
+}
+
+ApArgument: ApArgument<'input> = {
+    InitPeerId => ApArgument::InitPeerId,
+    <LastError> => ApArgument::LastError(None),
+    <le:LastErrorWithLambda> => ApArgument::LastError(Some(le)),
+    Timestamp => ApArgument::Timestamp,
+    TTL => ApArgument::TTL,
+    <l:Literal> => ApArgument::Literal(l),
+    <n:Number> => ApArgument::Number(n),
+    <b:Boolean> => ApArgument::Boolean(b),
+    "[" "]" => ApArgument::EmptyArray,
+    <scalar:Scalar> => ApArgument::Scalar(Scalar::new(scalar.0, scalar.1)),
+    <scalar:ScalarWithLambda> => ApArgument::ScalarWithLambda(ScalarWithLambda::new(scalar.0, scalar.1, scalar.2)),
+    <canon_stream:CanonStream> => ApArgument::CanonStream(CanonStream::new(canon_stream.0, canon_stream.1)),
+    <canon_stream:CanonStreamWithLambda> => ApArgument::CanonStreamWithLambda(CanonStreamWithLambda::new(canon_stream.0, canon_stream.1, canon_stream.2)),
+}
+
+StreamArgument: Stream<'input> = {
+    <stream:Stream> => Stream::new(stream.0, stream.1),
+}
+
+CanonStreamArgument: CanonStream<'input> = {
+    <canon_stream:CanonStream> => CanonStream::new(canon_stream.0, canon_stream.1),
+}
+
+extern {
+    type Location = AirPos;
+    type Error = ParserError;
+
+    enum Token<'input> {
+        "(" => Token::OpenRoundBracket,
+        ")" => Token::CloseRoundBracket,
+        "[" => Token::OpenSquareBracket,
+        "]" => Token::CloseSquareBracket,
+
+        Scalar => Token::Scalar { name:<&'input str>, position: <AirPos> },
+        ScalarWithLambda => Token::ScalarWithLambda { name: <&'input str>, lambda: <LambdaAST<'input>>, position: <AirPos> },
+        Stream => Token::Stream { name: <&'input str>, position: <AirPos> },
+        CanonStream => Token::CanonStream { name: <&'input str>, position: <AirPos> },
+        CanonStreamWithLambda => Token::CanonStreamWithLambda {name: <&'input str>, lambda:<LambdaAST<'input>>, position: <AirPos>},
+
+        Literal => Token::StringLiteral(<&'input str>),
+        I64 => Token::I64(<i64>),
+        F64 => Token::F64(<f64>),
+        Boolean => Token::Boolean(<bool>),
+
+        InitPeerId => Token::InitPeerId,
+        LastError => Token::LastError,
+        LastErrorWithLambda => Token::LastErrorWithLambda(<LambdaAST<'input>>),
+        Timestamp => Token::Timestamp,
+        TTL => Token::TTL,
+
+        call => Token::Call,
+        canon => Token::Canon,
+        ap => Token::Ap,
+        seq => Token::Seq,
+        par => Token::Par,
+        fail => Token::Fail,
+        fold => Token::Fold,
+        xor => Token::Xor,
+        never => Token::Never,
+        new => Token::New,
+        next => Token::Next,
+        null => Token::Null,
+        match_ => Token::Match,
+        mismatch => Token::MisMatch,
+    }
+}

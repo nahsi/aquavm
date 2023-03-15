@@ -1,0 +1,34 @@
+[package]
+name = "air-lambda-parser"
+description = "Parser of an AIR lambda"
+version = "0.1.0"
+authors = ["Fluence Labs"]
+edition = "2018"
+license = "Apache-2.0"
+repository = "https://github.com/fluencelabs/aquavm"
+documentation = "https://docs.rs/air-lambda-parser"
+keywords = ["fluence", "air", "parser", "lalrpop"]
+categories = ["wasm"]
+
+[lib]
+name = "air_lambda_parser"
+path = "src/lib.rs"
+
+[build-dependencies]
+lalrpop = "0.19.8"
+
+[dependencies]
+air-lambda-ast = { version = "0.1.0", path = "../ast" }
+
+lalrpop-util = "0.19.8"
+regex = "1.7.1"
+codespan = "0.11.1"
+codespan-reporting = "0.11.1"
+multimap = "0.8.3"
+
+# TODO: hide serde behind a feature
+serde = { version = "1.0.155", features = ["rc", "derive"] }
+serde_json = "1.0.94"
+
+itertools = "0.10.5"
+thiserror = "1.0.39"

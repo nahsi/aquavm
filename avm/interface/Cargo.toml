@@ -1,0 +1,27 @@
+[package]
+name = "avm-interface"
+description = "Fluence AIR VM interfacing"
+version = "0.28.2"
+authors = ["Fluence Labs"]
+edition = "2018"
+license = "Apache-2.0"
+documentation = "https://docs.rs/avm-interface"
+repository = "https://github.com/fluencelabs/aquavm/tree/master/avm/interface"
+keywords = ["fluence", "air", "webassembly", "programming-language"]
+categories = ["wasm"]
+
+[lib]
+name = "avm_interface"
+path = "src/lib.rs"
+
+[dependencies]
+air-interpreter-interface = { version = "0.12.1", path = "../../crates/air-lib/interpreter-interface", default-features = false }
+air-utils = { version = "0.1.0", path = "../../crates/air-lib/utils" }
+polyplets = { version = "0.3.2", path = "../../crates/air-lib/polyplets" }
+
+thiserror = "1.0.39"
+maplit = "1.0.2"
+serde_json = "1.0.94"
+serde = "1.0.155"
+log = "0.4.17"
+tracing = "0.1.37"

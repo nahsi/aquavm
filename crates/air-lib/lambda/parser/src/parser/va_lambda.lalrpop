@@ -1,0 +1,54 @@
+use crate::ValueAccessor;
+use crate::parser::lambda_parser::RawLambdaAST;
+use crate::Functor;
+use crate::parser::lexer::LexerError;
+use crate::parser::lexer::Token;
+
+use lalrpop_util::ErrorRecovery;
+
+// the only thing why input matters here is just introducing lifetime for Token
+grammar<'err, 'input>(input: &'input str, errors: &'err mut Vec<ErrorRecovery<usize, Token<'input>, LexerError>>);
+
+pub(crate) RawLambdaAST: RawLambdaAST<'input> = {
+    <value_path_starter: ".$"> <accessors: ValueAccessor*> => RawLambdaAST::ValuePath(accessors),
+
+    length_functor => RawLambdaAST::Functor(Functor::Length),
+
+    ! => { errors.push(<>); RawLambdaAST::Error },
+}
+
+ValueAccessor: ValueAccessor<'input> = {
+    <maybe_dot_selector:"."?> "[" <idx: number_accessor> "]" <maybe_flatten_sign:"!"?> => {
+        ValueAccessor::ArrayAccess { idx }
+    },
+
+    <maybe_dot_selector:"."?> "[" <scalar_name: string_accessor> "]" <maybe_flatten_sign:"!"?> => {
+        ValueAccessor::FieldAccessByScalar { scalar_name }
+    },
+
+    "." <field_name: string_accessor> <maybe_flatten_sign:"!"?> => {
+        ValueAccessor::FieldAccessByName { field_name }
+    },
+
+    ! => { errors.push(<>); ValueAccessor::Error },
+}
+
+extern {
+    type Location = usize;
+    type Error = LexerError;
+
+    enum Token<'input> {
+        ".$" => Token::ValuePathStarter,
+        "." => Token::ValuePathSelector,
+
+        "[" => Token::OpenSquareBracket,
+        "]" => Token::CloseSquareBracket,
+
+        number_accessor => Token::NumberAccessor(<u32>),
+        string_accessor => Token::StringAccessor(<&'input str>),
+
+        "!" => Token::FlatteningSign,
+
+        length_functor => Token::LengthFunctor,
+    }
+}

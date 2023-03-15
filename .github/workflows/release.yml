@@ -1,0 +1,345 @@
+name: "release-please"
+
+on:
+  push:
+    branches:
+      - "master"
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+
+    permissions:
+      pull-requests: write
+
+    outputs:
+      releases-created: ${{ steps.release.outputs.releases_created }}
+      pr: ${{ steps.release.outputs['pr'] }}
+
+      air-interpreter-release-created: ${{ steps.release.outputs['air-interpreter--release_created'] }}
+      air-interpreter-version: ${{ steps.release.outputs['air-interpreter--version'] }}
+      air-interpreter-tag-name: ${{ steps.release.outputs['air-interpreter--tag_name'] }}
+
+      air-beautify-wasm-release-created: ${{ steps.release.outputs['tools/wasm/air-beautify-wasm--release_created'] }}
+      air-beautify-wasm-tag-name: ${{ steps.release.outputs['tools/wasm/air-beautify-wasm--tag_name'] }}
+
+    steps:
+      - name: Run release-please
+        id: release
+        uses: google-github-actions/release-please-action@v3
+        with:
+          # token: ${{ secrets.FLUENCEBOT_RELEASE_PLEASE_PAT }}
+          command: manifest
+          config-file: .github/release-please/config.json
+          manifest-file: .github/release-please/manifest.json
+
+      - name: Show output from release-please
+        if: steps.release.outputs.releases_created
+        env:
+          RELEASE_PLEASE_OUTPUT: ${{ toJSON(steps.release.outputs) }}
+        run: echo "${RELEASE_PLEASE_OUTPUT}" | jq
+
+  bump-version:
+    if: needs.release-please.outputs.pr != null
+    runs-on: builder
+    needs:
+      - release-please
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
+          # token: ${{ secrets.FLUENCEBOT_RELEASE_PLEASE_PAT }}
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install cargo-edit
+        uses: baptiste0928/cargo-install@v1.3.1
+        with:
+          crate: cargo-edit
+
+      - name: Get air-interpreter version
+        id: version
+        run: |
+          version="$(jq -r '.["air-interpreter"]' .github/release-please/manifest.json)"
+          echo "version=${version}" >> $GITHUB_OUTPUT
+
+      - name: Set air-interpreter-wasm version
+        run: cargo set-version ${{ steps.version.outputs.version }}
+        working-directory: crates/interpreter-wasm
+
+      - name: Commit version bump
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "chore: Bump air-interpreter version to ${{ steps.version.outputs.version }}"
+          branch: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
+          commit_user_name: fluencebot
+          commit_user_email: devops@fluence.one
+          commit_author: fluencebot <devops@fluence.one>
+
+  crates:
+    if: needs.release-please.outputs.releases-created
+    runs-on: ubuntu-latest
+    needs:
+      - release-please
+
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      # - name: Import secrets
+      #   uses: hashicorp/vault-action@v2.5.0
+      #   with:
+      #     url: https://vault.fluence.dev
+      #     path: jwt/github
+      #     role: ci
+      #     method: jwt
+      #     jwtGithubAudience: "https://github.com/fluencelabs"
+      #     jwtTtl: 300
+      #     exportToken: false
+      #     secrets: |
+      #       kv/crates.io/fluencebot token | CARGO_REGISTRY_TOKEN
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install marine
+        uses: baptiste0928/cargo-install@v1.3.1
+        with:
+          crate: marine
+
+      - name: Build air_interpreter_server.wasm
+        run: marine build --release -p air-interpreter --features marine
+        working-directory: air-interpreter
+
+      - name: Upload air-interpreter-wasm artifact to GitHub checks
+        uses: actions/upload-artifact@v3
+        with:
+          name: air-interpreter-wasm
+          path: target/wasm32-wasi/release/air_interpreter_server.wasm
+
+      - name: Add air-interpreter-wasm artifact to GitHub release
+        if: needs.release-please.outputs.air-interpreter-release-created
+        uses: softprops/action-gh-release@v1
+        with:
+          files: target/wasm32-wasi/release/air_interpreter_server.wasm
+          tag_name: ${{ needs.release-please.outputs.air-interpreter-tag-name }}
+
+      # - name: Install cargo-workspaces
+      #   uses: baptiste0928/cargo-install@v1.3.1
+      #   with:
+      #     crate: cargo-workspaces
+
+      # - name: Publish to crates.io
+      #   run: |
+      #     cargo ws publish \
+      #       --no-git-commit \
+      #       --allow-dirty \
+      #       --from-git \
+      #       --skip-published \
+      #       --yes
+
+  avm-client:
+    if: needs.release-please.outputs.air-interpreter-release-created
+    runs-on: ubuntu-latest
+    needs:
+      - release-please
+      - crates
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Download air-interpreter-wasm artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: air-interpreter-wasm
+          path: avm/client/dist/
+
+      - run: mv air_interpreter_server.wasm avm.wasm
+        working-directory: avm/client/dist
+
+      # - name: Import secrets
+      #   uses: hashicorp/vault-action@v2.5.0
+      #   with:
+      #     url: https://vault.fluence.dev
+      #     path: jwt/github
+      #     role: ci
+      #     method: jwt
+      #     jwtGithubAudience: "https://github.com/fluencelabs"
+      #     jwtTtl: 300
+      #     exportToken: false
+      #     secrets: |
+      #       kv/npmjs/fluencebot token | NODE_AUTH_TOKEN
+
+      - name: Setup node
+        uses: actions/setup-node@v3
+        with:
+          node-version: "16"
+          registry-url: "https://registry.npmjs.org"
+          cache-dependency-path: avm/client/package-lock.json
+          cache: "npm"
+
+      - run: npm i
+        working-directory: avm/client
+
+      - run: npm run build
+        working-directory: avm/client
+
+      # - name: Publish to npm registry
+      #   run: npm publish --access public
+      #   working-directory: avm/client
+
+  air-interpreter-wasm:
+    if: needs.release-please.outputs.air-interpreter-release-created
+    runs-on: ubuntu-latest
+    needs:
+      - release-please
+      - crates
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Download air-interpreter-wasm artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: air-interpreter-wasm
+          path: crates/interpreter-wasm/
+
+      # - name: Import secrets
+      #   uses: hashicorp/vault-action@v2.5.0
+      #   with:
+      #     url: https://vault.fluence.dev
+      #     path: jwt/github
+      #     role: ci
+      #     method: jwt
+      #     jwtGithubAudience: "https://github.com/fluencelabs"
+      #     jwtTtl: 300
+      #     exportToken: false
+      #     secrets: |
+      #       kv/crates.io/fluencebot token | CARGO_REGISTRY_TOKEN
+
+      # - name: Publish to crates.io
+      #   run: cargo publish --allow-dirty
+      #   working-directory: crates/interpreter-wasm
+
+  air-beautify-wasm:
+    if: needs.release-please.outputs.air-beautify-wasm-release-created
+    runs-on: builder
+    needs:
+      - release-please
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+
+      - name: Build wasm
+        working-directory: tools/wasm/air-beautify-wasm
+        run: wasm-pack build --release -m force
+
+      # - name: Import secrets
+      #   uses: hashicorp/vault-action@v2.5.0
+      #   with:
+      #     url: https://vault.fluence.dev
+      #     path: jwt/github
+      #     role: ci
+      #     method: jwt
+      #     jwtGithubAudience: "https://github.com/fluencelabs"
+      #     jwtTtl: 300
+      #     exportToken: false
+      #     secrets: |
+      #       kv/npmjs/fluencebot token | NODE_AUTH_TOKEN
+
+      - name: Setup node
+        uses: actions/setup-node@v3
+        with:
+          node-version: "16"
+          registry-url: "https://registry.npmjs.org"
+
+      # - name: Publish to npm registry
+      #   run: npm publish --access public
+      #   working-directory: tools/wasm/air-beautify-wasm/pkg
+
+  # slack:
+  #   if: always()
+  #   name: "Notify"
+  #   runs-on: ubuntu-latest
+
+  #   needs:
+  #     - release-please
+  #     - crates
+  #     - avm-client
+  #     - air-interpreter-wasm
+  #     - air-beautify-wasm
+
+  #   permissions:
+  #     contents: read
+  #     id-token: write
+
+  #   steps:
+  #     - uses: lwhiteley/dependent-jobs-result-check@v1
+  #       id: status
+  #       with:
+  #         statuses: failure
+  #         dependencies: ${{ toJSON(needs) }}
+
+  #     - name: Log output
+  #       run: |
+  #         echo "statuses:" "${{ steps.status.outputs.statuses }}"
+  #         echo "jobs:" "${{ steps.status.outputs.jobs }}"
+  #         echo "found any?:" "${{ steps.status.outputs.found }}"
+
+  #     - name: Import secrets
+  #       uses: hashicorp/vault-action@v2.5.0
+  #       with:
+  #         url: https://vault.fluence.dev
+  #         path: jwt/github
+  #         role: ci
+  #         method: jwt
+  #         jwtGithubAudience: "https://github.com/fluencelabs"
+  #         jwtTtl: 300
+  #         exportToken: false
+  #         secrets: |
+  #           kv/slack/release-please webhook | SLACK_WEBHOOK_URL
+
+  #     - uses: ravsamhq/notify-slack-action@v2
+  #       if: steps.status.outputs.found == 'true'
+  #       with:
+  #         status: "failure"
+  #         notification_title: "*{workflow}* has {status_message}"
+  #         message_format: "${{ steps.status.outputs.jobs }} {status_message} in <{repo_url}|{repo}>"
+  #         footer: "<{run_url}>"

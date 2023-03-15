@@ -1,0 +1,14 @@
+modules_dir = "./target/wasm32-wasi/release/"
+
+[[module]]
+    name = "air_test_module"
+    mem_pages_count = 100
+    logger_enabled = true
+
+[[module]]
+    name = "air_interpreter_server"
+    mem_pages_count = 100
+    logger_enabled = true
+
+    [module.wasi]
+    envs = { "CURRENT_PEER_ID" = "some_peer_id" }

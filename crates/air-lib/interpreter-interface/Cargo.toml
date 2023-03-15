@@ -1,0 +1,26 @@
+[package]
+name = "air-interpreter-interface"
+description = "Interface of the AIR interpreter"
+version = "0.12.1"
+authors = ["Fluence Labs"]
+edition = "2018"
+license = "Apache-2.0"
+documentation = "https://docs.rs/air-interpreter-interface"
+repository = "https://github.com/fluencelabs/aquavm/tree/master/crates/air-lib/interpreter-interface"
+keywords = ["fluence", "air", "webassembly", "programming-language"]
+categories = ["wasm"]
+
+[lib]
+name = "air_interpreter_interface"
+path = "src/lib.rs"
+
+[dependencies]
+marine-rs-sdk = { version = "0.7.1", optional = true }
+fluence-it-types = { version = "0.3.2", optional = true }
+
+serde = "1.0.155"
+serde_json = "1.0.94"
+
+[features]
+default = ["marine"]
+marine = ["marine-rs-sdk", "fluence-it-types"]
